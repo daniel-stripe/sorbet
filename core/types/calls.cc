@@ -641,10 +641,8 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
         constr->defineDomain(gs, data->typeArguments());
     }
     bool hasKwargs = absl::c_any_of(data->arguments(), [](const auto &arg) { return arg.flags.isKeyword; });
-
-    auto nonPosArgs = args.args.size() - args.numPosArgs;
-    auto numKwArgs = nonPosArgs & ~0x1;
-    bool hasKwSplat = nonPosArgs & 0x1;
+    auto numKwargs = (args.args.size() - args.numPosArgs) & ~0x1;
+    bool hasKwsplat = (args.args.size() - args.numPosArgs) & 0x1;
 
     // p -> params, i.e., what was mentioned in the defintiion
     auto pit = data->arguments().begin();
@@ -658,9 +656,7 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
     // a -> args, i.e., what was passed at the call site
     auto ait = args.args.begin();
     auto aend = args.args.end();
-
-    // The last positional argument is used later to determine if all required positional arguments have been provided.
-    auto posEnd = ait + args.numPosArgs;
+    auto posEnd = args.args.begin() + args.numPosArgs;
 
     while (pit != pend && ait != posEnd) {
         const ArgInfo &spec = *pit;
@@ -685,6 +681,13 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
             ++pit;
         }
         ++ait;
+    }
+
+    // If there are positional arguments remaining, the method accepts keyword arguments, and the send doesn't provide
+    // any explicit keyword arguments, record that there's possibly a keyword splat to check.
+    if (ait != posEnd && hasKwargs && args.args.size() == args.numPosArgs) {
+        // NOTE: this would be a good place for an autocorrect to using `**kwhash`
+        hasKwsplat = true;
     }
 
     if (pit != pend) {
@@ -718,36 +721,41 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
     // keep this around so we know which keyword arguments have been supplied
     UnorderedSet<NameRef> consumed;
     if (hasKwargs && ait != aend) {
-        // TODO(trevor) is the default underlying type ok here?
-        ShapeType hashArgType;
+        vector<TypePtr> keys;
+        vector<TypePtr> values;
 
-        ENFORCE(numKwArgs % 2 == 0, "Keyword arguments aren't a list of pairs");
-
-        auto argit = args.args.begin() + args.numPosArgs;
-        auto kwargsEnd = argit + numKwArgs;
-        while (argit != kwargsEnd) {
-            auto &key = *argit++;
-            auto &val = *argit++;
-            hashArgType.keys.emplace_back(key->type);
-            hashArgType.values.emplace_back(val->type);
+        // process keyword argument pairs
+        {
+            auto kwit = args.args.begin() + args.numPosArgs;
+            auto kwend = args.args.begin() + args.numPosArgs + numKwargs;
+            while (kwit != kwend) {
+                auto &key = *kwit++;
+                auto &val = *kwit++;
+                keys.emplace_back(key->type);
+                values.emplace_back(val->type);
+            }
+            ait += numKwargs;
         }
 
-        if (hasKwSplat) {
-            auto &splatArg = *(aend - 1);
-            auto splatArgType = Types::approximate(gs, splatArg->type, *constr);
+        // merge in the keyword splat argument if it's present
+        if (hasKwsplat) {
+            auto &kwSplatArg = *(aend - 1);
+            auto kwSplatType = Types::approximate(gs, kwSplatArg->type, *constr);
 
-            if (auto *hash = cast_type<ShapeType>(splatArgType.get())) {
-                // merge this hash into the existing one
-                for (auto i = 0; i < hash->keys.size(); ++i) {
-                    hashArgType.keys.emplace_back(hash->keys[i]);
-                    hashArgType.values.emplace_back(hash->values[i]);
-                }
-            } else if (splatArgType->derivesFrom(gs, Symbols::Hash())) {
+            if (kwSplatType->isUntyped()) {
+                // Allow an untyped arg to satisfy all kwargs
+                --aend;
+            } else if (auto *hash = cast_type<ShapeType>(kwSplatType.get())) {
+                absl::c_copy(hash->keys, back_inserter(keys));
+                absl::c_copy(hash->values, back_inserter(values));
+                --aend;
+            } else if (kwSplatType->derivesFrom(gs, Symbols::Hash())) {
+                --aend;
                 if (auto e = gs.beginError(core::Loc(args.locs.file, args.locs.call), errors::Infer::UntypedSplat)) {
                     e.setHeader(
                         "Passing a hash where the specific keys are unknown to a method taking keyword arguments");
-                    e.addErrorSection(ErrorSection("Got " + splatArgType->show(gs) + " originating from:",
-                                                   splatArg->origins2Explanations(gs)));
+                    e.addErrorSection(ErrorSection("Got " + kwSplatType->show(gs) + " originating from:",
+                                                   kwSplatArg->origins2Explanations(gs)));
                     result.main.errors.emplace_back(e.build());
                 }
             }
@@ -760,12 +768,13 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
             kwit++;
         }
         pend = kwit;
+
         while (kwit != data->arguments().end()) {
             const ArgInfo &spec = *kwit;
             if (spec.flags.isBlock) {
                 break;
             } else if (spec.flags.isRepeated) {
-                for (auto it = hashArgType.keys.begin(); it != hashArgType.keys.end(); ++it) {
+                for (auto it = keys.begin(); it != keys.end(); ++it) {
                     auto key = cast_type<LiteralType>(it->get());
                     SymbolRef klass = cast_type<ClassType>(key->underlying().get())->symbol;
                     if (klass != Symbols::Symbol()) {
@@ -780,8 +789,8 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
 
                     TypeAndOrigins tpe;
                     tpe.origins = args.args.back()->origins;
-                    auto offset = it - hashArgType.keys.begin();
-                    tpe.type = hashArgType.values[offset];
+                    auto offset = it - keys.begin();
+                    tpe.type = values[offset];
                     if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
                                               core::Loc(args.locs.file, args.locs.receiver), symbol, method, tpe, spec,
                                               args.selfType, targs, Loc::none())) {
@@ -792,12 +801,12 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
             }
             ++kwit;
 
-            auto arg = absl::c_find_if(hashArgType.keys, [&](const TypePtr &litType) {
+            auto arg = absl::c_find_if(keys, [&](const TypePtr &litType) {
                 auto lit = cast_type<LiteralType>(litType.get());
                 return cast_type<ClassType>(lit->underlying().get())->symbol == Symbols::Symbol() &&
                        lit->value == spec.name._id;
             });
-            if (arg == hashArgType.keys.end()) {
+            if (arg == keys.end()) {
                 if (!spec.flags.isDefault) {
                     if (auto e = missingArg(gs, core::Loc(args.locs.file, args.locs.call),
                                             core::Loc(args.locs.file, args.locs.receiver), method, spec)) {
@@ -809,15 +818,15 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
             consumed.insert(spec.name);
             TypeAndOrigins tpe;
             tpe.origins = args.args.back()->origins;
-            auto offset = arg - hashArgType.keys.begin();
-            tpe.type = hashArgType.values[offset];
+            auto offset = arg - keys.begin();
+            tpe.type = values[offset];
             if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
                                       core::Loc(args.locs.file, args.locs.receiver), symbol, method, tpe, spec,
                                       args.selfType, targs, Loc::none())) {
                 result.main.errors.emplace_back(std::move(e));
             }
         }
-        for (auto &keyType : hashArgType.keys) {
+        for (auto &keyType : keys) {
             auto key = cast_type<LiteralType>(keyType.get());
             SymbolRef klass = cast_type<ClassType>(key->underlying().get())->symbol;
             if (klass == Symbols::Symbol() && consumed.find(NameRef(gs, key->value)) != consumed.end()) {
@@ -832,18 +841,13 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
             }
         }
     }
-
-    if (hasKwargs) {
-        // Check for keyword arguments with no default value, that didn't show up in the consumed set.
+    if (hasKwargs && aend == args.args.end()) {
+        // We have keyword arguments, but we didn't consume a hash at the
+        // end. Report an error for each missing required keyword arugment.
         for (auto &spec : data->arguments()) {
             if (!spec.flags.isKeyword || spec.flags.isDefault || spec.flags.isRepeated) {
                 continue;
             }
-
-            if (consumed.find(spec.name) != consumed.end()) {
-                continue;
-            }
-
             if (auto e = missingArg(gs, core::Loc(args.locs.file, args.locs.call),
                                     core::Loc(args.locs.file, args.locs.receiver), method, spec)) {
                 result.main.errors.emplace_back(std::move(e));
@@ -851,7 +855,7 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
         }
     }
 
-    if (ait != posEnd) {
+    if (ait != aend) {
         if (auto e =
                 gs.beginError(core::Loc(args.locs.file, args.locs.call), errors::Infer::MethodArgumentCountMismatch)) {
             if (!hasKwargs) {
@@ -863,8 +867,12 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                 // people some slightly confusing error messages.
 
                 // count the number of arguments
-                int posArgs = args.numPosArgs;
-
+                int posArgs = args.args.size();
+                // and if we have keyword arguments (i.e. if the last argument is a hash) then subtract 1 to get the
+                // total number of positional arguments
+                if (posArgs > 0 && isa_type<ShapeType>(args.args.back()->type.get())) {
+                    posArgs--;
+                }
                 // print a helpful error message
                 e.setHeader("Too many positional arguments provided for method `{}`. Expected: `{}`, got: `{}`",
                             data->show(gs), prettyArity(gs, method), posArgs);
