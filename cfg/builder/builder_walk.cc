@@ -134,7 +134,7 @@ BasicBlock *CFGBuilder::walkHash(CFGContext cctx, ast::Hash *h, BasicBlock *curr
 
     auto isPrivateOk = false;
     current->exprs.emplace_back(cctx.target, h->loc,
-                                make_unique<Send>(magic, method, h->loc, 0, vars, locs, isPrivateOk));
+                                make_unique<Send>(magic, method, h->loc, vars.size(), vars, locs, isPrivateOk));
     return current;
 }
 
