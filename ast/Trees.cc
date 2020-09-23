@@ -294,7 +294,8 @@ Send::Send(core::LocOffsets loc, TreePtr recv, core::NameRef fun, u1 numPosArgs,
            Flags flags)
     : Expression(loc), fun(fun), flags(flags), numPosArgs(numPosArgs), recv(std::move(recv)), args(std::move(args)),
       block(std::move(block)) {
-    ENFORCE(numPosArgs <= this->args.size());
+    ENFORCE(numPosArgs <= this->args.size(), "Expected {} positional arguments, but only have {} args", numPosArgs,
+            this->args.size());
 
     categoryCounterInc("trees", "send");
     if (block) {
