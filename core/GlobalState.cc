@@ -627,8 +627,9 @@ void GlobalState::initEmpty() {
     method = enterMethodSymbol(Loc::none(), Symbols::DeclBuilderForProcsSingleton(), Names::params());
     {
         auto &arg = enterMethodArgumentSymbol(Loc::none(), method, Names::arg0());
-        arg.flags.isDefault = true;
-        arg.type = Types::hashOfUntyped();
+        arg.flags.isKeyword = true;
+        arg.flags.isRepeated = true;
+        arg.type = Types::untyped(*this, method);
     }
     method.data(*this)->resultType = Types::declBuilderForProcsSingletonClass();
     {
