@@ -841,7 +841,7 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
             }
         }
     }
-    if (hasKwargs && aend == args.args.end()) {
+    if (hasKwargs && consumed.empty()) {
         // We have keyword arguments, but we didn't consume a hash at the
         // end. Report an error for each missing required keyword arugment.
         for (auto &spec : data->arguments()) {
