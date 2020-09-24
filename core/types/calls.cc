@@ -2094,19 +2094,26 @@ public:
     void apply(const GlobalState &gs, DispatchArgs args, const Type *thisType, DispatchResult &res) const override {
         auto *shape = cast_type<ShapeType>(thisType);
         ENFORCE(shape);
-        ShapeType *rhs = nullptr;
-        if (!args.args.empty()) {
-            rhs = cast_type<ShapeType>(args.args.front()->type.get());
-        }
-        if (rhs == nullptr || args.block != nullptr || args.args.size() > 1) {
+
+        if (args.args.empty()) {
             return;
+        }
+
+        // detect a kwsplat argument, or single positional hash argument
+        auto numKwargs = (args.args.size() - args.numPosArgs) & ~0x1;
+        bool hasKwsplat = (args.args.size() - args.numPosArgs) & 0x1;
+        ShapeType *kwsplat = nullptr;
+        if (hasKwsplat || (numKwargs == 0 && args.args.size() == 1)) {
+            kwsplat = cast_type<ShapeType>(args.args.back()->type.get());
+            if (kwsplat == nullptr) {
+                return;
+            }
         }
 
         auto keys = shape->keys;
         auto values = shape->values;
-        for (auto &keyType : rhs->keys) {
-            auto key = cast_type<LiteralType>(keyType.get());
-            auto &value = rhs->values[&keyType - &rhs->keys.front()];
+        auto addShapeEntry = [&keys, &values](const TypePtr &keyType, const TypePtr &value) {
+            auto *key = cast_type<LiteralType>(keyType.get());
             auto fnd =
                 absl::c_find_if(keys, [&key](auto &lit) { return key->equals(*cast_type<LiteralType>(lit.get())); });
             if (fnd == keys.end()) {
@@ -2114,6 +2121,18 @@ public:
                 values.emplace_back(value);
             } else {
                 values[fnd - keys.begin()] = value;
+            }
+        };
+
+        // inlined keyword arguments first
+        for (auto i = 0; i < numKwargs; i += 2) {
+            addShapeEntry(args.args[i]->type, args.args[i+1]->type);
+        }
+
+        // then kwsplat
+        if (kwsplat != nullptr) {
+            for (auto &keyType : kwsplat->keys) {
+                addShapeEntry(keyType, kwsplat->values[&keyType - &kwsplat->keys.front()]);
             }
         }
 
