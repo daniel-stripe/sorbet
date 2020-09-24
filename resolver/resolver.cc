@@ -1738,7 +1738,7 @@ private:
                             args.emplace_back(local->deepCopy());
                         }
 
-                        if (!seenKwArgs) {
+                        if (!seenKwArgs && !info.flags.isBlock) {
                             ++numPosArgs;
                         }
                     }
