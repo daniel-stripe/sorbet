@@ -22,28 +22,23 @@ ast::TreePtr ASTUtil::dupType(const ast::TreePtr &orig) {
             return send->deepCopy();
         }
 
-        if (send->fun == core::Names::params() && send->args.size() == 1) {
-            if (auto hash = ast::cast_tree_const<ast::Hash>(send->args[0])) {
-                // T.proc.params takes keyword arguments
-                ast::Hash::ENTRY_store values;
-                ast::Hash::ENTRY_store keys;
+        if (send->fun == core::Names::params() && send->numPosArgs == 0 && send->args.size() % 2 == 0) {
+            // T.proc.params takes inlined keyword argument pairs, and can't handle kwsplat
+            ast::Send::ARGS_store args;
 
-                for (auto &value : hash->values) {
-                    auto dupedValue = ASTUtil::dupType(value);
-                    if (dupedValue == nullptr) {
-                        return nullptr;
-                    }
+            for (auto i = 0; i < send->args.size(); i += 2) {
+                ENFORCE(ast::isa_tree<ast::Literal>(send->args[i]));
+                args.emplace_back(send->args[i].deepCopy());
 
-                    values.emplace_back(std::move(dupedValue));
+                auto dupedValue = ASTUtil::dupType(send->args[i+1]);
+                if (dupedValue == nullptr) {
+                    return nullptr;
                 }
 
-                for (auto &key : hash->keys) {
-                    keys.emplace_back(key.deepCopy());
-                }
-
-                auto arg = ast::MK::Hash(hash->loc, std::move(keys), std::move(values));
-                return ast::MK::Send1(send->loc, std::move(dupRecv), send->fun, std::move(arg));
+                args.emplace_back(std::move(dupedValue));
             }
+
+            return ast::MK::Send(send->loc, std::move(dupRecv), send->fun, 0, std::move(args));
         }
 
         for (auto &arg : send->args) {
