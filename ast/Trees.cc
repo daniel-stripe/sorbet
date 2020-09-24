@@ -987,6 +987,8 @@ string Send::showRaw(const core::GlobalState &gs, int tabs) {
         fmt::format_to(buf, "nullptr\n");
     }
     printTabs(buf, tabs + 1);
+    fmt::format_to(buf, "pos_args = {}\n", this->numPosArgs);
+    printTabs(buf, tabs + 1);
     fmt::format_to(buf, "args = [\n");
     for (auto &a : args) {
         printTabs(buf, tabs + 2);
