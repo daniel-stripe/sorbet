@@ -433,17 +433,14 @@ ast::TreePtr ensureWithoutAccessors(const PropInfo &prop, const ast::Send *send)
         auto true_ = ast::MK::True(send->loc);
 
         auto *copy = ast::cast_tree<ast::Send>(result);
-        if (copy->args.empty()) {
-            copy->args.emplace_back(ast::MK::Hash1(send->loc, std::move(withoutAccessors), std::move(true_)));
-        } else {
-            auto rulesTree = ASTUtil::mkKwArgsHash(copy);
-            if (auto *rules = ast::cast_tree<ast::Hash>(rulesTree)) {
-                rules->keys.emplace_back(std::move(withoutAccessors));
-                rules->values.emplace_back(std::move(true_));
-            } else {
-                copy->args.emplace_back(ast::MK::Hash1(send->loc, std::move(withoutAccessors), std::move(true_)));
-            }
+        auto pos = copy->args.end();
+        if (copy->hasKwSplat()) {
+            pos--;
         }
+
+        pos = copy->args.insert(pos, std::move(withoutAccessors));
+        pos += 1;
+        copy->args.insert(pos, std::move(true_));
 
         return result;
     }
