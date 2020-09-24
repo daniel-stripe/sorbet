@@ -120,7 +120,7 @@ module T::Props::WeakConstructor
 end
 
 module T::Props::Constructor
-  def initialize(hash = nil); end
+  def initialize(**hash); end
   include T::Props::WeakConstructor
 end
 
