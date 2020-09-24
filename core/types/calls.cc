@@ -640,6 +640,7 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
     if (data->isGenericMethod()) {
         constr->defineDomain(gs, data->typeArguments());
     }
+    auto posArgs = args.numPosArgs;
     bool hasKwargs = absl::c_any_of(data->arguments(), [](const auto &arg) { return arg.flags.isKeyword; });
     auto numKwargs = (args.args.size() - args.numPosArgs) & ~0x1;
     bool hasKwsplat = (args.args.size() - args.numPosArgs) & 0x1;
@@ -685,9 +686,12 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
 
     // If there are positional arguments remaining, the method accepts keyword arguments, and the send doesn't provide
     // any explicit keyword arguments, record that there's possibly a keyword splat to check.
+    bool implicitKwsplat = false;
     if (ait != posEnd && hasKwargs && args.args.size() == args.numPosArgs) {
         // NOTE: this would be a good place for an autocorrect to using `**kwhash`
         hasKwsplat = true;
+        implicitKwsplat = true;
+        posArgs = max(0, posArgs - 1);
     }
 
     if (pit != pend) {
@@ -699,12 +703,12 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                         "Not enough arguments provided for method `{}` on `{}` component of `{}`. Expected: `{}`, got: "
                         "`{}`",
                         data->show(gs), thisType->show(gs), args.fullType->show(gs), prettyArity(gs, method),
-                        args.args.size()); // TODO: should use position and print the source tree, not the cfg one.
+                        posArgs); // TODO: should use position and print the source tree, not the cfg one.
                 } else {
                     e.setHeader(
                         "Not enough arguments provided for method `{}`. Expected: `{}`, got: `{}`", data->show(gs),
                         prettyArity(gs, method),
-                        args.args.size()); // TODO: should use position and print the source tree, not the cfg one.
+                        posArgs); // TODO: should use position and print the source tree, not the cfg one.
                 }
                 e.addErrorLine(method.data(gs)->loc(), "`{}` defined here", data->show(gs));
                 if (args.name == core::Names::any() &&
@@ -866,13 +870,6 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                 // if we have keyword arguments, we should print a more informative message: otherwise, we might give
                 // people some slightly confusing error messages.
 
-                // count the number of arguments
-                int posArgs = args.args.size();
-                // and if we have keyword arguments (i.e. if the last argument is a hash) then subtract 1 to get the
-                // total number of positional arguments
-                if (posArgs > 0 && isa_type<ShapeType>(args.args.back()->type.get())) {
-                    posArgs--;
-                }
                 // print a helpful error message
                 e.setHeader("Too many positional arguments provided for method `{}`. Expected: `{}`, got: `{}`",
                             data->show(gs), prettyArity(gs, method), posArgs);
