@@ -722,11 +722,11 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
         }
     }
 
-    // keep this around so we know which keyword arguments have been supplied
-    UnorderedSet<NameRef> consumed;
-    if (hasKwargs && ait != aend) {
-        vector<TypePtr> keys;
-        vector<TypePtr> values;
+    // Extract the kwargs hash if there are keyword args present in the send
+    TypePtr kwargs;
+    if (numKwargs > 0 || hasKwsplat) {
+        kwargs = make_type<ShapeType>();
+        auto *kwHash = cast_type<ShapeType>(kwargs.get());
 
         // process keyword argument pairs
         {
@@ -735,8 +735,8 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
             while (kwit != kwend) {
                 auto &key = *kwit++;
                 auto &val = *kwit++;
-                keys.emplace_back(key->type);
-                values.emplace_back(val->type);
+                kwHash->keys.emplace_back(key->type);
+                kwHash->values.emplace_back(val->type);
             }
             ait += numKwargs;
         }
@@ -750,8 +750,8 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                 // Allow an untyped arg to satisfy all kwargs
                 --aend;
             } else if (auto *hash = cast_type<ShapeType>(kwSplatType.get())) {
-                absl::c_copy(hash->keys, back_inserter(keys));
-                absl::c_copy(hash->values, back_inserter(values));
+                absl::c_copy(hash->keys, back_inserter(kwHash->keys));
+                absl::c_copy(hash->values, back_inserter(kwHash->values));
                 --aend;
             } else if (kwSplatType->derivesFrom(gs, Symbols::Hash())) {
                 --aend;
@@ -764,84 +764,90 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                 }
             }
         }
+    }
 
-        // find keyword arguments and advance `pend` before them; We'll walk
-        // `kwit` ahead below
-        auto kwit = pit;
-        while (!kwit->flags.isKeyword) {
-            kwit++;
-        }
-        pend = kwit;
+    // keep this around so we know which keyword arguments have been supplied
+    UnorderedSet<NameRef> consumed;
+    if (hasKwargs && ait != aend) {
+        if (auto *hash = cast_type<ShapeType>(kwargs.get())) {
+            // find keyword arguments and advance `pend` before them; We'll walk
+            // `kwit` ahead below
+            auto kwit = pit;
+            while (!kwit->flags.isKeyword) {
+                kwit++;
+            }
+            pend = kwit;
 
-        while (kwit != data->arguments().end()) {
-            const ArgInfo &spec = *kwit;
-            if (spec.flags.isBlock) {
-                break;
-            } else if (spec.flags.isRepeated) {
-                for (auto it = keys.begin(); it != keys.end(); ++it) {
-                    auto key = cast_type<LiteralType>(it->get());
-                    SymbolRef klass = cast_type<ClassType>(key->underlying().get())->symbol;
-                    if (klass != Symbols::Symbol()) {
-                        continue;
+            while (kwit != data->arguments().end()) {
+                const ArgInfo &spec = *kwit;
+                if (spec.flags.isBlock) {
+                    break;
+                } else if (spec.flags.isRepeated) {
+                    for (auto it = hash->keys.begin(); it != hash->keys.end(); ++it) {
+                        auto key = cast_type<LiteralType>(it->get());
+                        SymbolRef klass = cast_type<ClassType>(key->underlying().get())->symbol;
+                        if (klass != Symbols::Symbol()) {
+                            continue;
+                        }
+
+                        NameRef arg(gs, key->value);
+                        if (consumed.find(NameRef(gs, key->value)) != consumed.end()) {
+                            continue;
+                        }
+                        consumed.insert(arg);
+
+                        TypeAndOrigins tpe;
+                        tpe.origins = args.args.back()->origins;
+                        auto offset = it - hash->keys.begin();
+                        tpe.type = hash->values[offset];
+                        if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
+                                                  core::Loc(args.locs.file, args.locs.receiver), symbol, method, tpe, spec,
+                                                  args.selfType, targs, Loc::none())) {
+                            result.main.errors.emplace_back(std::move(e));
+                        }
                     }
-
-                    NameRef arg(gs, key->value);
-                    if (consumed.find(NameRef(gs, key->value)) != consumed.end()) {
-                        continue;
-                    }
-                    consumed.insert(arg);
-
-                    TypeAndOrigins tpe;
-                    tpe.origins = args.args.back()->origins;
-                    auto offset = it - keys.begin();
-                    tpe.type = values[offset];
-                    if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
-                                              core::Loc(args.locs.file, args.locs.receiver), symbol, method, tpe, spec,
-                                              args.selfType, targs, Loc::none())) {
-                        result.main.errors.emplace_back(std::move(e));
-                    }
+                    break;
                 }
-                break;
-            }
-            ++kwit;
+                ++kwit;
 
-            auto arg = absl::c_find_if(keys, [&](const TypePtr &litType) {
-                auto lit = cast_type<LiteralType>(litType.get());
-                return cast_type<ClassType>(lit->underlying().get())->symbol == Symbols::Symbol() &&
-                       lit->value == spec.name._id;
-            });
-            if (arg == keys.end()) {
-                if (!spec.flags.isDefault) {
-                    if (auto e = missingArg(gs, core::Loc(args.locs.file, args.locs.call),
-                                            core::Loc(args.locs.file, args.locs.receiver), method, spec)) {
-                        result.main.errors.emplace_back(std::move(e));
+                auto arg = absl::c_find_if(hash->keys, [&](const TypePtr &litType) {
+                    auto lit = cast_type<LiteralType>(litType.get());
+                    return cast_type<ClassType>(lit->underlying().get())->symbol == Symbols::Symbol() &&
+                           lit->value == spec.name._id;
+                });
+                if (arg == hash->keys.end()) {
+                    if (!spec.flags.isDefault) {
+                        if (auto e = missingArg(gs, core::Loc(args.locs.file, args.locs.call),
+                                                core::Loc(args.locs.file, args.locs.receiver), method, spec)) {
+                            result.main.errors.emplace_back(std::move(e));
+                        }
                     }
+                    continue;
                 }
-                continue;
+                consumed.insert(spec.name);
+                TypeAndOrigins tpe;
+                tpe.origins = args.args.back()->origins;
+                auto offset = arg - hash->keys.begin();
+                tpe.type = hash->values[offset];
+                if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
+                                          core::Loc(args.locs.file, args.locs.receiver), symbol, method, tpe, spec,
+                                          args.selfType, targs, Loc::none())) {
+                    result.main.errors.emplace_back(std::move(e));
+                }
             }
-            consumed.insert(spec.name);
-            TypeAndOrigins tpe;
-            tpe.origins = args.args.back()->origins;
-            auto offset = arg - keys.begin();
-            tpe.type = values[offset];
-            if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
-                                      core::Loc(args.locs.file, args.locs.receiver), symbol, method, tpe, spec,
-                                      args.selfType, targs, Loc::none())) {
-                result.main.errors.emplace_back(std::move(e));
-            }
-        }
-        for (auto &keyType : keys) {
-            auto key = cast_type<LiteralType>(keyType.get());
-            SymbolRef klass = cast_type<ClassType>(key->underlying().get())->symbol;
-            if (klass == Symbols::Symbol() && consumed.find(NameRef(gs, key->value)) != consumed.end()) {
-                continue;
-            }
-            NameRef arg(gs, key->value);
+            for (auto &keyType : hash->keys) {
+                auto key = cast_type<LiteralType>(keyType.get());
+                SymbolRef klass = cast_type<ClassType>(key->underlying().get())->symbol;
+                if (klass == Symbols::Symbol() && consumed.find(NameRef(gs, key->value)) != consumed.end()) {
+                    continue;
+                }
+                NameRef arg(gs, key->value);
 
-            if (auto e = gs.beginError(core::Loc(args.locs.file, args.locs.call),
-                                       errors::Infer::MethodArgumentCountMismatch)) {
-                e.setHeader("Unrecognized keyword argument `{}` passed for method `{}`", arg.show(gs), data->show(gs));
-                result.main.errors.emplace_back(e.build());
+                if (auto e = gs.beginError(core::Loc(args.locs.file, args.locs.call),
+                                           errors::Infer::MethodArgumentCountMismatch)) {
+                    e.setHeader("Unrecognized keyword argument `{}` passed for method `{}`", arg.show(gs), data->show(gs));
+                    result.main.errors.emplace_back(e.build());
+                }
             }
         }
     }
