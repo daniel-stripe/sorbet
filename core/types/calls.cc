@@ -694,49 +694,22 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
         posArgs = max(0, posArgs - 1);
     }
 
-    if (pit != pend) {
-        if (!(pit->flags.isKeyword || pit->flags.isDefault || pit->flags.isRepeated || pit->flags.isBlock)) {
-            if (auto e = gs.beginError(core::Loc(args.locs.file, args.locs.call),
-                                       errors::Infer::MethodArgumentCountMismatch)) {
-                if (args.fullType.get() != thisType) {
-                    e.setHeader(
-                        "Not enough arguments provided for method `{}` on `{}` component of `{}`. Expected: `{}`, got: "
-                        "`{}`",
-                        data->show(gs), thisType->show(gs), args.fullType->show(gs), prettyArity(gs, method),
-                        posArgs); // TODO: should use position and print the source tree, not the cfg one.
-                } else {
-                    e.setHeader(
-                        "Not enough arguments provided for method `{}`. Expected: `{}`, got: `{}`", data->show(gs),
-                        prettyArity(gs, method),
-                        posArgs); // TODO: should use position and print the source tree, not the cfg one.
-                }
-                e.addErrorLine(method.data(gs)->loc(), "`{}` defined here", data->show(gs));
-                if (args.name == core::Names::any() &&
-                    symbol == core::Symbols::T().data(gs)->lookupSingletonClass(gs)) {
-                    e.addErrorSection(
-                        core::ErrorSection("Hint: if you want to allow any type as an argument, use `T.untyped`"));
-                }
-
-                result.main.errors.emplace_back(e.build());
-            }
-        }
-    }
-
     // Extract the kwargs hash if there are keyword args present in the send
     TypePtr kwargs;
     if (numKwargs > 0 || hasKwsplat) {
-        kwargs = make_type<ShapeType>();
-        auto *kwHash = cast_type<ShapeType>(kwargs.get());
+        vector<TypePtr> keys;
+        vector<TypePtr> values;
 
         // process keyword argument pairs
         {
             auto kwit = args.args.begin() + args.numPosArgs;
             auto kwend = args.args.begin() + args.numPosArgs + numKwargs;
+
             while (kwit != kwend) {
                 auto &key = *kwit++;
                 auto &val = *kwit++;
-                kwHash->keys.emplace_back(key->type);
-                kwHash->values.emplace_back(val->type);
+                keys.emplace_back(key->type);
+                values.emplace_back(val->type);
             }
             ait += numKwargs;
         }
@@ -750,8 +723,8 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                 // Allow an untyped arg to satisfy all kwargs
                 --aend;
             } else if (auto *hash = cast_type<ShapeType>(kwSplatType.get())) {
-                absl::c_copy(hash->keys, back_inserter(kwHash->keys));
-                absl::c_copy(hash->values, back_inserter(kwHash->values));
+                absl::c_copy(hash->keys, back_inserter(keys));
+                absl::c_copy(hash->values, back_inserter(values));
                 --aend;
             } else if (kwSplatType->derivesFrom(gs, Symbols::Hash())) {
                 --aend;
@@ -764,11 +737,60 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                 }
             }
         }
+
+        kwargs = make_type<ShapeType>(Types::hashOfUntyped(), move(keys), move(values));
+
+        if (pit != pend) {
+            if (!(pit->flags.isKeyword || pit->flags.isDefault || pit->flags.isBlock)) {
+                // If there are positional arguments left to be filled, but there were keyword arguments present, consume the
+                // keyword args hash as though it was a positional arg.
+                auto locStart = args.locs.args[args.numPosArgs];
+                auto locEnd = args.locs.args.back();
+                if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
+                                          core::Loc(args.locs.file, args.locs.receiver), symbol, method,
+                                          TypeAndOrigins{kwargs, {}}, *pit, args.selfType, targs,
+                                          core::Loc(args.locs.file, locStart.join(locEnd)), args.args.size() == 1)) {
+                    result.main.errors.emplace_back(std::move(e));
+                }
+
+                if (!pit->flags.isRepeated) {
+                    pit++;
+                }
+            }
+        }
+    }
+
+    if (pit != pend) {
+        if (!(pit->flags.isKeyword || pit->flags.isDefault || pit->flags.isRepeated || pit->flags.isBlock)) {
+            if (auto e = gs.beginError(core::Loc(args.locs.file, args.locs.call),
+                                       errors::Infer::MethodArgumentCountMismatch)) {
+                if (args.fullType.get() != thisType) {
+                    e.setHeader(
+                        "Not enough arguments provided for method `{}` on `{}` component of `{}`. Expected: `{}`, got: "
+                        "`{}`",
+                        data->show(gs), thisType->show(gs), args.fullType->show(gs), prettyArity(gs, method),
+                        posArgs); // TODO: should use position and print the source tree, not the cfg one.
+                } else {
+                    e.setHeader("Not enough arguments provided for method `{}`. Expected: `{}`, got: `{}`",
+                                data->show(gs), prettyArity(gs, method),
+                                posArgs); // TODO: should use position and print the source tree, not the cfg one.
+                }
+                e.addErrorLine(method.data(gs)->loc(), "`{}` defined here", data->show(gs));
+                if (args.name == core::Names::any() &&
+                    symbol == core::Symbols::T().data(gs)->lookupSingletonClass(gs)) {
+                    e.addErrorSection(
+                        core::ErrorSection("Hint: if you want to allow any type as an argument, use `T.untyped`"));
+                }
+
+                result.main.errors.emplace_back(e.build());
+            }
+        }
+
     }
 
     // keep this around so we know which keyword arguments have been supplied
     UnorderedSet<NameRef> consumed;
-    if (hasKwargs && ait != aend) {
+    if (hasKwargs) {
         if (auto *hash = cast_type<ShapeType>(kwargs.get())) {
             // find keyword arguments and advance `pend` before them; We'll walk
             // `kwit` ahead below
@@ -801,8 +823,8 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                         auto offset = it - hash->keys.begin();
                         tpe.type = hash->values[offset];
                         if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
-                                                  core::Loc(args.locs.file, args.locs.receiver), symbol, method, tpe, spec,
-                                                  args.selfType, targs, Loc::none())) {
+                                                  core::Loc(args.locs.file, args.locs.receiver), symbol, method, tpe,
+                                                  spec, args.selfType, targs, Loc::none())) {
                             result.main.errors.emplace_back(std::move(e));
                         }
                     }
@@ -845,7 +867,8 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
 
                 if (auto e = gs.beginError(core::Loc(args.locs.file, args.locs.call),
                                            errors::Infer::MethodArgumentCountMismatch)) {
-                    e.setHeader("Unrecognized keyword argument `{}` passed for method `{}`", arg.show(gs), data->show(gs));
+                    e.setHeader("Unrecognized keyword argument `{}` passed for method `{}`", arg.show(gs),
+                                data->show(gs));
                     result.main.errors.emplace_back(e.build());
                 }
             }
@@ -2129,7 +2152,7 @@ public:
 
         // inlined keyword arguments first
         for (auto i = 0; i < numKwargs; i += 2) {
-            addShapeEntry(args.args[i]->type, args.args[i+1]->type);
+            addShapeEntry(args.args[i]->type, args.args[i + 1]->type);
         }
 
         // then kwsplat
