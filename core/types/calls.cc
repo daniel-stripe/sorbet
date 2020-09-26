@@ -686,17 +686,20 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
 
     // If there are positional arguments remaining, the method accepts keyword arguments, and the send doesn't provide
     // any explicit keyword arguments, record that there's possibly a keyword splat to check.
-    bool implicitKwsplat = false;
     if (ait != posEnd && hasKwargs && args.args.size() == args.numPosArgs) {
         // NOTE: this would be a good place for an autocorrect to using `**kwhash`
         hasKwsplat = true;
-        implicitKwsplat = true;
         posArgs = max(0, posArgs - 1);
     }
 
     // Extract the kwargs hash if there are keyword args present in the send
     TypePtr kwargs;
+    Loc kwargsLoc;
     if (numKwargs > 0 || hasKwsplat) {
+        auto locStart = args.locs.args[args.numPosArgs];
+        auto locEnd = args.locs.args.back();
+        kwargsLoc = Loc{args.locs.file, locStart.join(locEnd)};
+
         vector<TypePtr> keys;
         vector<TypePtr> values;
 
@@ -744,12 +747,10 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
             if (!(pit->flags.isKeyword || pit->flags.isDefault || pit->flags.isBlock)) {
                 // If there are positional arguments left to be filled, but there were keyword arguments present, consume the
                 // keyword args hash as though it was a positional arg.
-                auto locStart = args.locs.args[args.numPosArgs];
-                auto locEnd = args.locs.args.back();
                 if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
                                           core::Loc(args.locs.file, args.locs.receiver), symbol, method,
-                                          TypeAndOrigins{kwargs, {}}, *pit, args.selfType, targs,
-                                          core::Loc(args.locs.file, locStart.join(locEnd)), args.args.size() == 1)) {
+                                          TypeAndOrigins{kwargs, {kwargsLoc}}, *pit, args.selfType, targs,
+                                          kwargsLoc, args.args.size() == 1)) {
                     result.main.errors.emplace_back(std::move(e));
                 }
 
@@ -819,7 +820,7 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                         consumed.insert(arg);
 
                         TypeAndOrigins tpe;
-                        tpe.origins = args.args.back()->origins;
+                        tpe.origins = {kwargsLoc};
                         auto offset = it - hash->keys.begin();
                         tpe.type = hash->values[offset];
                         if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
@@ -848,7 +849,7 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                 }
                 consumed.insert(spec.name);
                 TypeAndOrigins tpe;
-                tpe.origins = args.args.back()->origins;
+                tpe.origins = {kwargsLoc};
                 auto offset = arg - hash->keys.begin();
                 tpe.type = hash->values[offset];
                 if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
