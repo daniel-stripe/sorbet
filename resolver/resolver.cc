@@ -1016,25 +1016,21 @@ class ResolveTypeMembersWalk {
 
         // When no args are supplied, this implies that the upper and lower
         // bounds of the type parameter are top and bottom.
-        ast::Hash *hash = nullptr;
-        if (rhs->args.size() == 1) {
-            hash = ast::cast_tree<ast::Hash>(rhs->args[0]);
-        } else if (rhs->args.size() == 2) {
-            hash = ast::cast_tree<ast::Hash>(rhs->args[1]);
-        }
+        auto [posEnd, kwEnd] = rhs->kwArgsRange();
+        if (kwEnd - posEnd > 0) {
+            for (auto i = posEnd; i < kwEnd; i += 2) {
+                auto &keyExpr = rhs->args[i];
 
-        if (hash) {
-            int i = -1;
-            for (auto &keyExpr : hash->keys) {
-                i++;
                 auto lit = ast::cast_tree<ast::Literal>(keyExpr);
                 if (lit && lit->isSymbol(ctx)) {
+                    auto &value = rhs->args[i+1];
+
                     ParsedSig emptySig;
                     auto allowSelfType = true;
                     auto allowRebind = false;
                     auto allowTypeMember = false;
                     core::TypePtr resTy =
-                        TypeSyntax::getResultType(ctx, hash->values[i], emptySig,
+                        TypeSyntax::getResultType(ctx, value, emptySig,
                                                   TypeSyntaxArgs{allowSelfType, allowRebind, allowTypeMember, lhs});
 
                     switch (lit->asSymbol(ctx)._id) {
