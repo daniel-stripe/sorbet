@@ -54,7 +54,7 @@ vector<ast::TreePtr> Delegate::run(core::MutableContext ctx, const ast::Send *se
         return empty;
     }
 
-    if (send->args.size() == 1) {
+    if (send->numPosArgs == 0) {
         // there has to be at least one positional argument
         return empty;
     }
@@ -93,7 +93,7 @@ vector<ast::TreePtr> Delegate::run(core::MutableContext ctx, const ast::Send *se
     }
 
     vector<ast::TreePtr> methodStubs;
-    for (int i = 0; i < send->args.size() - 1; i++) {
+    for (int i = 0; i < send->numPosArgs; i++) {
         auto *lit = ast::cast_tree_const<ast::Literal>(send->args[i]);
         if (!lit || !lit->isSymbol(ctx)) {
             return empty;
