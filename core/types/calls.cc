@@ -714,7 +714,6 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                 keys.emplace_back(key->type);
                 values.emplace_back(val->type);
             }
-            ait += numKwargs;
         }
 
         // merge in the keyword splat argument if it's present
@@ -803,6 +802,9 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
     UnorderedSet<NameRef> consumed;
     if (hasKwargs) {
         if (auto *hash = cast_type<ShapeType>(kwargs.get())) {
+            // advance the argument iterator over the keyword arguments that have been processed
+            ait += numKwargs;
+
             // find keyword arguments and advance `pend` before them; We'll walk
             // `kwit` ahead below
             auto kwit = pit;
