@@ -685,7 +685,7 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
     }
 
     // If there are positional arguments remaining, the method accepts keyword arguments, and the send doesn't provide
-    // any explicit keyword arguments, record that there's possibly a keyword splat to check.
+    // any explicit keyword arguments, there's an implicit keyword args hash to check.
     if (ait != posEnd && hasKwargs && args.args.size() == args.numPosArgs) {
         // NOTE: this would be a good place for an autocorrect to using `**kwhash`
         hasKwsplat = true;
@@ -743,10 +743,20 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
 
         kwargs = make_type<ShapeType>(Types::hashOfUntyped(), move(keys), move(values));
 
-        if (pit != pend) {
-            if (!(pit->flags.isKeyword || pit->flags.isDefault || pit->flags.isBlock)) {
-                // If there are positional arguments left to be filled, but there were keyword arguments present, consume the
-                // keyword args hash as though it was a positional arg.
+        // This is the case where the method doesn't define any keyword arguments, but keyword arguments were passed to
+        // the send. What happens in the VM is that the arguments are treated as a hash, and passed as the final
+        // argument of the send:
+        //
+        // def foo(a); end
+        // foo(x: 10)
+        //
+        // Handling this case explicitly is a consequence of inlining the keyword args directly in the send; if the args
+        // were always present as a keyword args hash, this would happen naturally in the initial loop that processes
+        // parameters and arguments.
+        if (!hasKwargs && pit != pend) {
+            if (!(pit->flags.isDefault || pit->flags.isBlock)) {
+                // If there are positional arguments left to be filled, but there were keyword arguments present,
+                // consume the keyword args hash as though it was a positional arg.
                 if (auto e = matchArgType(gs, *constr, core::Loc(args.locs.file, args.locs.call),
                                           core::Loc(args.locs.file, args.locs.receiver), symbol, method,
                                           TypeAndOrigins{kwargs, {kwargsLoc}}, *pit, args.selfType, targs,
@@ -873,18 +883,17 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
                     result.main.errors.emplace_back(e.build());
                 }
             }
-        }
-    }
-    if (hasKwargs && consumed.empty()) {
-        // We have keyword arguments, but we didn't consume a hash at the
-        // end. Report an error for each missing required keyword arugment.
-        for (auto &spec : data->arguments()) {
-            if (!spec.flags.isKeyword || spec.flags.isDefault || spec.flags.isRepeated) {
-                continue;
-            }
-            if (auto e = missingArg(gs, core::Loc(args.locs.file, args.locs.call),
-                                    core::Loc(args.locs.file, args.locs.receiver), method, spec)) {
-                result.main.errors.emplace_back(std::move(e));
+        } else {
+            // We have keyword arguments, but we didn't consume a hash at the
+            // end. Report an error for each missing required keyword arugment.
+            for (auto &spec : data->arguments()) {
+                if (!spec.flags.isKeyword || spec.flags.isDefault || spec.flags.isRepeated) {
+                    continue;
+                }
+                if (auto e = missingArg(gs, core::Loc(args.locs.file, args.locs.call),
+                                        core::Loc(args.locs.file, args.locs.receiver), method, spec)) {
+                    result.main.errors.emplace_back(std::move(e));
+                }
             }
         }
     }
