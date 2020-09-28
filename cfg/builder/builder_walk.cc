@@ -336,10 +336,18 @@ BasicBlock *CFGBuilder::walk(CFGContext cctx, ast::Expression *what, BasicBlock 
                 if (s->fun == core::Names::absurd()) {
                     if (auto cnst = ast::cast_tree<ast::ConstantLit>(s->recv)) {
                         if (cnst->symbol == core::Symbols::T()) {
-                            if (s->args.size() != 1) {
+                            if (s->hasKwArgs()) {
+                                if (auto e = cctx.ctx.beginError(s->loc, core::errors::CFG::MalformedTAbsurd)) {
+                                    e.setHeader("`{}` does not accept keyword arguments", "T.absurd");
+                                }
+                                ret = current;
+                                return;
+                            }
+
+                            if (s->numPosArgs != 1) {
                                 if (auto e = cctx.ctx.beginError(s->loc, core::errors::CFG::MalformedTAbsurd)) {
                                     e.setHeader("`{}` expects exactly one argument but got `{}`", "T.absurd",
-                                                s->args.size());
+                                                s->numPosArgs);
                                 }
                                 ret = current;
                                 return;
