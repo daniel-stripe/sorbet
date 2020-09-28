@@ -903,9 +903,11 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
     if (ait != aend) {
         if (auto e =
                 gs.beginError(core::Loc(args.locs.file, args.locs.call), errors::Infer::MethodArgumentCountMismatch)) {
+            auto hashCount = (numKwargs > 0 || hasKwsplat) ? 1 : 0;
+            auto numArgsGiven = args.numPosArgs + hashCount;
             if (!hasKwargs) {
                 e.setHeader("Too many arguments provided for method `{}`. Expected: `{}`, got: `{}`", data->show(gs),
-                            prettyArity(gs, method), args.args.size());
+                            prettyArity(gs, method), numArgsGiven);
                 e.addErrorLine(method.data(gs)->loc(), "`{}` defined here", args.name.show(gs));
             } else {
                 // if we have keyword arguments, we should print a more informative message: otherwise, we might give
