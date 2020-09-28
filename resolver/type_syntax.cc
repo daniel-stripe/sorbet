@@ -420,7 +420,7 @@ core::TypePtr interpretTCombinator(core::MutableContext ctx, ast::Send *send, co
                                    TypeSyntaxArgs args) {
     switch (send->fun._id) {
         case core::Names::nilable()._id:
-            if (send->args.size() != 1) {
+            if (send->numPosArgs != 1 || send->hasKwArgs()) {
                 return core::Types::untypedUntracked(); // error will be reported in infer.
             }
             return core::Types::any(ctx, getResultTypeWithSelfTypeParams(ctx, send->args[0], sig, args),
