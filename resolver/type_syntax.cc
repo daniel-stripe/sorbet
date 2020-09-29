@@ -296,26 +296,19 @@ ParsedSig parseSigWithSelfTypeParams(core::MutableContext ctx, ast::Send *sigSen
                 case core::Names::override_()._id: {
                     sig.seen.override_ = true;
 
-                    if (send->args.size() > 1) {
+                    if (send->numPosArgs > 0) {
                         if (auto e = ctx.beginError(send->loc, core::errors::Resolver::InvalidMethodSignature)) {
-                            e.setHeader("Wrong number of args to `{}`. Expected: `{}`, got: `{}`", send->fun.show(ctx),
-                                        "0-1", send->args.size());
+                            auto paramsStr = send->fun.show(ctx);
+                            e.setHeader("`{}` expects keyword arguments", send->fun.show(ctx));
                         }
+                        break;
                     }
 
-                    if (send->args.size() == 1) {
-                        auto *hash = ast::cast_tree<ast::Hash>(send->args[0]);
-                        if (hash == nullptr) {
-                            if (auto e = ctx.beginError(send->loc, core::errors::Resolver::InvalidMethodSignature)) {
-                                auto paramsStr = send->fun.show(ctx);
-                                e.setHeader("`{}` expects keyword arguments", send->fun.show(ctx));
-                            }
-                            break;
-                        }
-
-                        int i = 0;
-                        for (auto &key : hash->keys) {
-                            auto &value = hash->values[i++];
+                    if (!send->args.empty()) {
+                        auto [posEnd,kwEnd] = send->kwArgsRange();
+                        for (auto i = posEnd; i < kwEnd; i += 2) {
+                            auto &key = send->args[i];
+                            auto &value = send->args[i+1];
                             auto lit = ast::cast_tree<ast::Literal>(key);
                             if (lit && lit->isSymbol(ctx)) {
                                 if (lit->asSymbol(ctx) == core::Names::allowIncompatible()) {
