@@ -696,9 +696,16 @@ DispatchResult dispatchCallSymbol(const GlobalState &gs, DispatchArgs args,
     TypePtr kwargs;
     Loc kwargsLoc;
     if (numKwargs > 0 || hasKwsplat) {
-        auto locStart = args.locs.args[args.numPosArgs];
-        auto locEnd = args.locs.args.back();
-        kwargsLoc = Loc{args.locs.file, locStart.join(locEnd)};
+
+        // for cases where the method accepts keyword arguments, none were given, but more positional arguments were
+        // given than were expected, just take the location from the last argument of the keyword args list.
+        if (numKwargs == 0) {
+            kwargsLoc = Loc{args.locs.file, args.locs.args.back()};
+        } else {
+            auto locStart = args.locs.args[args.numPosArgs];
+            auto locEnd = args.locs.args.back();
+            kwargsLoc = Loc{args.locs.file, locStart.join(locEnd)};
+        }
 
         vector<TypePtr> keys;
         vector<TypePtr> values;
