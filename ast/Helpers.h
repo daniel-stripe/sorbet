@@ -133,6 +133,7 @@ public:
             // the LHS might be a send of the form x.y=(), in which case we add the RHS to the arguments list and get
             // x.y=(rhs)
             s->args.emplace_back(std::move(rhs));
+            s->numPosArgs++;
             return lhs;
         } else if (auto *seq = cast_tree<ast::InsSeq>(lhs)) {
             // the LHS might be a sequence, which means that it's the result of a safe navigation operator, like
